@@ -1,0 +1,4 @@
+dependencies:
+  ds18b20: "^0.1.0"
+  esp_wrover_kit:
+    version: ^1.0.0
