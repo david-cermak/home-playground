@@ -32,7 +32,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
 }
 
 
-esp_err_t wifi_connect(void)
+esp_err_t wifi_connect(bool quick)
 {
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -65,7 +65,7 @@ esp_err_t wifi_connect(void)
     ESP_LOGI(TAG, "wifi_init_sta finished.");
     int retry = 0;
     char *text;
-    const int retry_count = 120;
+    const int retry_count = quick ? 40 : 120;
     EventBits_t bits = 0;
     while (bits == 0) {
         asprintf(&text, "connecting to wifi... %d", retry++);

@@ -15,8 +15,8 @@
 #include "math.h"
 #include "my_wifi.h"
 
-esp_err_t wifi_connect(void);
-void display_chart(uint8_t *points, int num_points, int current, int hours, float temp, int thres, int mode);
+esp_err_t wifi_connect(bool quick);
+void display_chart(uint8_t *points, uint8_t *points2, int num_points, int current, int hours, float temp, float temp2, int thres, int mode);
 
 static const char *TAG = "boiler";
 
@@ -33,7 +33,9 @@ typedef struct interval {
 } interval_t;
 
 static RTC_DATA_ATTR uint8_t temp[NUM_POINTS] = {};
+static RTC_DATA_ATTR uint8_t temp2[NUM_POINTS] = {};
 static RTC_DATA_ATTR uint16_t count = 0;
+static RTC_DATA_ATTR uint16_t last_update = 0;
 static RTC_DATA_ATTR uint8_t level = 0;
 static const uint16_t temp_low = 40;
 //static const interval_t intervals[] =  {  { 430, 530, 45 },
@@ -41,15 +43,16 @@ static const uint16_t temp_low = 40;
 //                                          { 600, 1900, 23},
 //                                          { 1900, 2100, 40} };
 static const interval_t intervals[] =  {
+      { 1440, 1511, 45, "Af1" },
+      { 1510, 1536, 50, "Af2" },
+      { 1535, 1600, 57, "Af3" },
+      { 1830, 2101, 30, "Eve"}, // Using temp2 sensor (evening shower time)
+      { 2100, 2131, 50, "Ev1"},
+      { 2130, 2230, 45, "Ev2" },
+      { 400, 436, 42, "Mo1" },
+      { 435, 510, 53, "Mo2"},
       { 900, 1700, 35, "Day" },
-      { 1440, 1501, 45, "Af1" },
-      { 1500, 1531, 50, "Af2" },
-      { 1530, 1600, 55, "Af3" },
-      { 1900, 2101, 42, "Eve"},
-      { 2100, 2131, 45, "Ev1"},
-      { 2130, 2230, 40, "Ev2" },
-      { 400, 431, 42, "Mo1" },
-      { 430, 510, 50, "Mo2"} };
+};
 
 
 static void example_deep_sleep_register_ext0_wakeup(void)
@@ -68,6 +71,7 @@ static void example_deep_sleep_register_ext0_wakeup(void)
 static float get_single_temp(ds18b20_device_handle_t h)
 {
     float temperature;
+    ds18b20_trigger_temperature_conversion(h);
     ESP_ERROR_CHECK(ds18b20_get_temperature(h, &temperature));
     ESP_LOGI(TAG, "temperature read from DS18B20[%d]: %.2fC", 0, temperature);
     return temperature;
@@ -75,6 +79,9 @@ static float get_single_temp(ds18b20_device_handle_t h)
 
 static float get_temperature(ds18b20_device_handle_t h)
 {
+    if (h == NULL) {
+        return 42.0;
+    }
     float t1 = get_single_temp(h);
     float t2 = get_single_temp(h);
     const int retry_count = 5;
@@ -136,7 +143,7 @@ void app_main(void)
     gpio_hold_en(LED_OUT2);
     gpio_hold_en(LED_OUT3);
     gpio_deep_sleep_hold_en();
-    if (timeinfo.tm_year < (2016 - 1900)) {
+    if (timeinfo.tm_year < (2016 - 1900) || ++last_update > 60*3) {
         level = 0;
         gpio_hold_dis(LED_OUT);
         gpio_set_level(LED_OUT, 0);
@@ -144,9 +151,11 @@ void app_main(void)
         gpio_set_level(GPIO_OUT, 0);
         gpio_hold_en(GPIO_OUT);
         ESP_LOGI(TAG, "Time is not set yet. Connecting to WiFi and getting time over NTP.");
-        if (wifi_connect() != ESP_OK) {
+        if (wifi_connect(last_update > 60*3) != ESP_OK) {
+            last_update = 60*2;
             esp_deep_sleep(1000000LL * 10);
         }
+        last_update = 0;
         esp_deep_sleep(1000000LL * 1);
     }
     int hours = timeinfo.tm_hour*100 + timeinfo.tm_min;
@@ -192,25 +201,33 @@ void app_main(void)
         }
     } while (search_result != ESP_ERR_NOT_FOUND);
     ESP_ERROR_CHECK(onewire_del_device_iter(iter));
+//    ESP_ERROR_CHECK(ds18b20_set_resolution(ds18b20s[0], DS18B20_RESOLUTION_12B));
 #else
     ds18b20_config_t cfg = {};
-    onewire_device_t dev = { .address = 0xFF1161811E64FF28, .bus = bus };
-    ds18b20_device_num = (ds18b20_new_device(&dev, &cfg, &ds18b20s[0]) == ESP_OK &&
-                          ds18b20_trigger_temperature_conversion(ds18b20s[0]) == ESP_OK  ) ? 1 : 0;
+    ds18b20_device_num = 0;
+//    onewire_device_t dev = { .address = 0xFF1161811E64FF28, .bus = bus };
+    onewire_device_t dev = { .address = 0x13B364811E64FF28, .bus = bus };
+    ds18b20_device_num += (ds18b20_new_device(&dev, &cfg, &ds18b20s[0]) == ESP_OK &&
+                          ds18b20_set_resolution(ds18b20s[0], DS18B20_RESOLUTION_12B) == ESP_OK  ) ? 1 : 0;
+    onewire_device_t dev2 = { .address = 0xFF1161811E64FF28, .bus = bus };
+    ds18b20_device_num += (ds18b20_new_device(&dev2, &cfg, &ds18b20s[1]) == ESP_OK &&
+                           ds18b20_set_resolution(ds18b20s[1], DS18B20_RESOLUTION_12B) == ESP_OK  ) ? 1 : 0;
 
 #endif
     ESP_LOGI(TAG, "Searching done, %d DS18B20 device(s) found", ds18b20_device_num);
-    float temperature;
+    float temperature, temperature2;
     if (ds18b20_device_num == 0) {
-        temperature = 42.0;
+        temperature2 = temperature = 42.0;
         ESP_LOGI(TAG, "temperature not available, using %.2fC", temperature);
     } else {
         // set resolution
-        ESP_ERROR_CHECK(ds18b20_set_resolution(ds18b20s[0], DS18B20_RESOLUTION_12B));
+//        ESP_ERROR_CHECK(ds18b20_set_resolution(ds18b20s[0], DS18B20_RESOLUTION_12B));
         // get temperature
         temperature = get_temperature(ds18b20s[0]);
+        temperature2 = get_temperature(ds18b20s[1]);
     }
     ESP_LOGI(TAG, "Using temperature %.2f~C", temperature);
+    ESP_LOGI(TAG, "Using temperature2 %.2f~C", temperature2);
 
     int temp_threshold = temp_low;
     int mode;
@@ -225,11 +242,28 @@ void app_main(void)
     if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
         gpio_hold_dis(LED_OUT);
         gpio_set_level(LED_OUT, 0);
-        display_chart(temp, NUM_POINTS, count, hours, temperature, temp_threshold, mode);
+        display_chart(temp, temp2, NUM_POINTS, count, hours, temperature, temperature2, temp_threshold, mode);
         esp_deep_sleep(1000000LL * 1);
     }
     temp[count] = temperature*2;
-    ESP_LOGE(TAG, "TEMP %d %d", count, temp[count]);
+    temp2[count] = temperature2*2;
+    ESP_LOGE(TAG, "TEMP[%d] %d, %d", count, temp[count], temp2[count]);
+
+    if (mode == 3) {
+        ESP_LOGW(TAG, "MODE3 -- Using temp 2!..");
+        temperature = temperature2;
+        // if the temp2 sensor detects "big" drop, increase the threshold
+        int prev = count - 3;
+        if (prev < 0) prev+=NUM_POINTS;
+        int prev2 = count - 6;
+        if (prev2 < 0) prev2+=NUM_POINTS;
+        if (temp2[prev2] > temp2[prev] + 2 && temp2[prev] > temp2[count] + 2) {
+            temp_threshold = 35;
+        }
+        if (temp2[prev2] > temp2[prev] + 4 && temp2[prev] > temp2[count] + 4) { // 10 deg in the last 6 minutes
+            temp_threshold = 42;
+        }
+    }
 
     if (temperature < temp_threshold && level == 0)  {
         level = 1;
