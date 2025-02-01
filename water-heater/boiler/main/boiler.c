@@ -37,21 +37,22 @@ static RTC_DATA_ATTR uint8_t temp2[NUM_POINTS] = {};
 static RTC_DATA_ATTR uint16_t count = 0;
 static RTC_DATA_ATTR uint16_t last_update = 0;
 static RTC_DATA_ATTR uint8_t level = 0;
-static const uint16_t temp_low = 40;
+static RTC_DATA_ATTR uint8_t override_timer = 0;
+static const uint16_t temp_low = 33;
 //static const interval_t intervals[] =  {  { 430, 530, 45 },
 //                                          { 1400, 1600, 45},
 //                                          { 600, 1900, 23},
 //                                          { 1900, 2100, 40} };
 static const interval_t intervals[] =  {
-      { 1440, 1511, 45, "Af1" },
-      { 1510, 1536, 50, "Af2" },
-      { 1535, 1600, 57, "Af3" },
-      { 1830, 2101, 30, "Eve"}, // Using temp2 sensor (evening shower time)
-      { 2100, 2131, 50, "Ev1"},
-      { 2130, 2230, 45, "Ev2" },
-      { 400, 436, 42, "Mo1" },
-      { 435, 510, 53, "Mo2"},
-      { 900, 1700, 35, "Day" },
+      { 1440, 1511, 38, "Af1" },
+      { 1510, 1536, 43, "Af2" },
+      { 1535, 1600, 49, "Af3" },
+      { 1800, 2101, 30, "Eve"},
+      { 2100, 2131, 43, "Ev1"},
+      { 2130, 2230, 40, "Ev2" },
+      { 400, 436, 36, "Mo1" },
+      { 435, 510, 45, "Mo2"},
+      { 900, 1700, 30, "Day" },
 };
 
 
@@ -249,18 +250,26 @@ void app_main(void)
     temp2[count] = temperature2*2;
     ESP_LOGE(TAG, "TEMP[%d] %d, %d", count, temp[count], temp2[count]);
 
+    temperature = temperature2;
     if (mode == 3) {
-        ESP_LOGW(TAG, "MODE3 -- Using temp 2!..");
-        temperature = temperature2;
+        ESP_LOGW(TAG, "MODE3 -- Drop detection");
         // if the temp2 sensor detects "big" drop, increase the threshold
         int prev = count - 3;
         if (prev < 0) prev+=NUM_POINTS;
         int prev2 = count - 6;
         if (prev2 < 0) prev2+=NUM_POINTS;
         if (temp2[prev2] > temp2[prev] + 2 && temp2[prev] > temp2[count] + 2) {
-            temp_threshold = 35;
+            if (override_timer == 0) {
+                override_timer = 5; // next 5 minutes with higher threshold
+            }
         }
         if (temp2[prev2] > temp2[prev] + 4 && temp2[prev] > temp2[count] + 4) { // 10 deg in the last 6 minutes
+            temp_threshold = 42;
+            override_timer = 10; // next 10 minutes with higher threshold
+        }
+        if (override_timer > 0) {
+            ESP_LOGI(TAG, "Override timer %d", override_timer);
+            --override_timer;
             temp_threshold = 42;
         }
     }
